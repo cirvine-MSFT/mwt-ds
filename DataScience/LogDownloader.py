@@ -22,14 +22,47 @@ def valid_date(s):
         return datetime.datetime.strptime(s, "%Y-%m-%d")
     except ValueError:
         raise argparse.ArgumentTypeError("Not a valid date: '{0}'. Expected format: YYYY-MM-DD".format(s))
-        
+
+def _parse_date_components_from_log_file(log_file_name):
+    """Parses and returns the date components from a log file name.
+
+    Args:
+        log_file_name - The name of the file in format Path/ConfigEditDate_data_YYYY_MM_DD_OrderNumber.
+
+    Returns:
+        The date components as strings in [YYYY, MM, DD].
+    """
+    return log_file_name.split('_data_')[1].split('_')[:3]
+
+def parse_date_components_from_log_file(log_file_name):
+    """Parses and returns the date components from a log file name.
+
+    Args:
+        log_file_name - The name of the file in format Path/ConfigEditDate_data_YYYY_MM_DD_OrderNumber.
+
+    Returns:
+        The date components as ints in [YYYY, MM, DD].
+    """
+    return list(map(int, _parse_date_components_from_log_file(log_file_name)))
+
+def parse_date_from_log_file(log_file_name, delim='-'):
+    """Parses and returns the date from a log file name.
+
+    Args:
+        log_file_name - The name of the file in format Path/ConfigEditDate_data_YYYY_MM_DD_OrderNumber.
+
+    Returns:
+        The date in YYYY-MM-DD format.
+    """
+    return delim.join(_parse_date_components_from_log_file(log_file_name))
+
 def cmp_files(f1, f2, start_range_f1=0, start_range_f2=0, erase_checkpoint_line=True):
     with open(f1, 'rb+' if erase_checkpoint_line else 'rb') as fp1, open(f2, 'rb') as fp2:
         if start_range_f1 != 0:
             fp1.seek(start_range_f1, os.SEEK_SET if start_range_f1 > 0 else os.SEEK_END)
         if start_range_f2 != 0:
             fp2.seek(start_range_f2, os.SEEK_SET if start_range_f2 > 0 else os.SEEK_END)
-            
+
         prev_b1 = b''
         while True:
             b1 = fp1.read(1)
@@ -72,6 +105,7 @@ def add_parser_args(parser):
     parser.add_argument('-v','--version', type=int, default=2, help='''version of log downloader to use:
     1: for uncooked logs (only for backward compatibility) [deprecated]
     2: for cooked logs [default]''')
+    parser.add_argument('--skip_ds_config', help="skips parsing ds.config file", action='store_true')
 
 def update_progress(current, total):
     barLength = 50 # Length of the progress bar
@@ -85,7 +119,7 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
         container=app_id
 
     print('------'*10)
-    Logger.info('Current UTC time: {}\n'.format(datetime.datetime.now(datetime.timezone.utc)) + 
+    Logger.info('Current UTC time: {}\n'.format(datetime.datetime.now(datetime.timezone.utc)) +
                 'app_id: {}\n'.format(app_id) +
                 'container: {}\n'.format(container) +
                 'log_dir: {}\n'.format(log_dir) +
@@ -112,7 +146,7 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
                 do_download = False
             elif overwrite_mode == 1 and input('Output file {} already exists. Do you want to overwrite [Y/n]? '.format(output_fp)) not in {'Y', 'y'}:
                 do_download = False
-                
+
         if do_download:
             if dry_run:
                 Logger.info('--dry_run - Not downloading!')
@@ -132,7 +166,7 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
                 except:
                     Logger.exception()
                     sys.exit(1)
-        
+
     else: # using BlockBlobService python api for cooked logs
         try:
             if sas_token and account_name:
@@ -262,9 +296,9 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
                     for fp in selected_fps:
                         models.setdefault(os.path.basename(fp).split('_data_',1)[0], []).append(fp)
                     for model in models:
-                        models[model].sort(key=lambda x : list(map(int,x.split('_data_')[1].split('_')[:3])))
-                        start_date = '-'.join(models[model][0].split('_data_')[1].split('_')[:3])
-                        end_date = '-'.join(models[model][-1].split('_data_')[1].split('_')[:3])
+                        models[model].sort(key=parse_date_components_from_log_file)
+                        start_date = parse_date_from_log_file(models[model][0])
+                        end_date = parse_date_from_log_file(models[model][-1])
                         output_fp = os.path.join(log_dir, app_id, app_id+'_'+model+'_data_'+start_date+'_'+end_date+'.json.gz')
                         Logger.info('Concat and zip files of LastConfigurationEditDate={} to: {}'.format(model, output_fp))
                         if os.path.isfile(output_fp) and __name__ == '__main__' and input('Output file already exists. Do you want to overwrite [Y/n]? '.format(output_fp)) not in {'Y', 'y'}:
@@ -278,17 +312,17 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
                                     with open(fp, 'rb') as f_in:
                                         shutil.copyfileobj(f_in, f_out, length=100*1024**2)   # writing chunks of 100MB to avoid consuming memory
                 elif create_gzip_mode == 1:
-                    selected_fps.sort(key=lambda x : (list(map(int,x.split('_data_')[1].split('_')[:3])), -os.path.getsize(x), x))
+                    selected_fps.sort(key=lambda x : (parse_date_components_from_log_file(x), -os.path.getsize(x), x))
                     selected_fps_merged = []
                     last_fp_date = None
                     for fp in selected_fps:
-                        fp_date = datetime.datetime.strptime('_'.join(fp.split('_data_')[1].split('_')[:3]), "%Y_%m_%d")
+                        fp_date = datetime.datetime.strptime(parse_date_from_log_file(fp, delim='_'), "%Y_%m_%d")
                         if fp_date != last_fp_date:
                             selected_fps_merged.append(fp)
                             last_fp_date = fp_date
 
-                    start_date = '-'.join(selected_fps_merged[0].split('_data_')[1].split('_')[:3])
-                    end_date = '-'.join(selected_fps_merged[-1].split('_data_')[1].split('_')[:3])
+                    start_date = parse_date_from_log_file(selected_fps_merged[0])
+                    end_date = parse_date_from_log_file(selected_fps_merged[-1])
                     output_fp = os.path.join(log_dir, app_id, app_id+'_merged_data_'+start_date+'_'+end_date+'.json.gz')
                     Logger.info('Merge and zip files of all LastConfigurationEditDate to: {}'.format(output_fp))
                     if not os.path.isfile(output_fp) or __name__ == '__main__' and input('Output file already exists. Do you want to overwrite [Y/n]? '.format(output_fp)) in {'Y', 'y'}:
@@ -303,9 +337,9 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
                                     with open(fp, 'rb') as f_in:
                                         shutil.copyfileobj(f_in, f_out, length=1024**3)   # writing chunks of 1GB to avoid consuming memory
                 elif create_gzip_mode == 2:
-                    selected_fps.sort(key=lambda x : (list(map(int,x.split('_data_')[1].split('_')[:3])), -os.path.getsize(x), x))
-                    start_date = '-'.join(selected_fps[0].split('_data_')[1].split('_')[:3])
-                    end_date = '-'.join(selected_fps[-1].split('_data_')[1].split('_')[:3])
+                    selected_fps.sort(key=lambda x : (parse_date_components_from_log_file(x), -os.path.getsize(x), x))
+                    start_date = parse_date_from_log_file(selected_fps[0])
+                    end_date = parse_date_from_log_file(selected_fps[-1])
                     output_fp = os.path.join(log_dir, app_id, app_id+'_deepmerged_data_'+start_date+'_'+end_date+'.json.gz')
                     Logger.info('Merge, unique, sort, and zip files of all LastConfigurationEditDate to: {}'.format(output_fp))
                     if not os.path.isfile(output_fp) or __name__ == '__main__' and input('Output file already exists. Do you want to overwrite [Y/n]? '.format(output_fp)) in {'Y', 'y'}:
@@ -337,7 +371,7 @@ def download_container(app_id, log_dir, container=None, conn_string=None, accoun
                     Logger.warning('Unrecognized --create_gzip_mode: {}, skipping creating gzip files.'.format(create_gzip_mode))
             else:
                 Logger.info('No file downloaded, skipping creating gzip files.')
-                    
+
     time_taken = time.time()-t_start
     Logger.info('Total elapsed time: {:.1f} sec.\n'.format(time_taken))
     Logger.info('\nDownloaded {:.3f} MB in {:.1f} sec. ({:.3f} MB/sec)\n'.format(total_download_size_MB, time_taken, total_download_size_MB/time_taken))
@@ -350,13 +384,18 @@ if __name__ == '__main__':
     if kwargs['version'] == 1:
         if kwargs.get('start_date', None) is None:
             parser.error('When downloading using version=1, the following argument is required: --start_date')
-        
-        if kwargs.get('end_date', None) is None:
-            kwargs['end_date'] = datetime.datetime.utcnow() 
 
-    # Parse ds.config
-    auth_dict = dict(x.split(': ',1) for x in open('ds.config').read().split('[AzureStorageAuthentication]',1)[1].split('\n') if ': ' in x)
-    auth_str = auth_dict.get(kwargs['app_id'], auth_dict['$Default'])
-    kwargs.update(dict(x.split(':',1) for x in auth_str.split(',')))
+        if kwargs.get('end_date', None) is None:
+            kwargs['end_date'] = datetime.datetime.utcnow()
+
+    if not kwargs['skip_ds_config']:
+        # Parse ds.config
+        auth_dict = dict(x.split(': ',1) for x in open('ds.config').read().split('[AzureStorageAuthentication]',1)[1].split('\n') if ': ' in x)
+        auth_str = auth_dict.get(kwargs['app_id'], auth_dict['$Default'])
+        kwargs.update(dict(x.split(':',1) for x in auth_str.split(',')))
+
+    # Remove skip_ds_config since it is not needed or expected in download_container.
+    # It is only used in the main method.
+    del kwargs['skip_ds_config']
 
     download_container(**kwargs)
